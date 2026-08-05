@@ -11,3 +11,4 @@ requests
 pydantic
 sse-starlette
 python-dotenv
+python-multipart

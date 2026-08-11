@@ -14,33 +14,36 @@ from pypdf import PdfReader
 
 MODEL_NAME = "models/gemini-3.5-flash-lite"
 
-# Render will read GOOGLE_API_KEY from Environment Variables
+# Render reads GOOGLE_API_KEY automatically from Environment Variables
 llm = ChatGoogleGenerativeAI(model=MODEL_NAME)
 
 # -------------------- Tools --------------------
 
 @tool
 def job_search(role: str) -> str:
-    """Search for current job/internship postings for a role."""
-    from langchain_community.tools import DuckDuckGoSearchRun
+    """Return a predefined market snapshot for common backend roles."""
 
-    raw = DuckDuckGoSearchRun().run(
-        f"{role} job openings required skills site:linkedin.com OR site:naukri.com"
-    )
+    return f"""
+For the role '{role}', employers commonly expect:
 
-    prompt = f"""
-Extract from these job search snippets for "{role}":
+- Java or Python
+- Spring Boot / FastAPI / Django
+- REST APIs
+- SQL and PostgreSQL/MySQL
+- Git & GitHub
+- Docker basics
+- Cloud basics (AWS/Azure/GCP)
+- Problem solving and debugging skills
 
-1. Top technical skills
-2. Common qualifications
-3. Nice-to-have skills
+Common qualifications:
+- B.Tech / B.E. / CSE or related degree
+- Internship or academic project experience
 
-Data:
-{raw}
-
-Return concise bullet points.
+Nice-to-have:
+- Redis
+- CI/CD basics
+- Linux command line
 """
-    return llm.invoke(prompt).content
 
 
 @tool
@@ -60,6 +63,7 @@ Return:
 3. Quick Wins
 4. Readiness Verdict
 """
+
     return llm.invoke(prompt).content
 
 
@@ -77,6 +81,7 @@ Suggest exactly 4 projects with:
 - One-line scope
 - Estimated build time
 """
+
     return llm.invoke(prompt).content
 
 
@@ -110,12 +115,13 @@ def github_profile_check(github_username: str) -> str:
     languages = {}
     recently_active = 0
 
-    for r in repos:
-        lang = r.get("language")
+    for repo in repos:
+        lang = repo.get("language")
+
         if lang:
             languages[lang] = languages.get(lang, 0) + 1
 
-        if r.get("pushed_at", "") >= "2025-01-01":
+        if repo.get("pushed_at", "") >= "2025-01-01":
             recently_active += 1
 
     return (
@@ -160,6 +166,8 @@ agent = create_agent(
     system_prompt=SYSTEM_PROMPT,
 )
 
+# -------------------- Output Cleaner --------------------
+
 def run_agent(input_data: dict) -> str:
     result = agent.invoke(input_data)
 
@@ -179,7 +187,7 @@ def run_agent(input_data: dict) -> str:
 
     return final_message.strip()
 
-from langchain_core.runnables import RunnableLambda
+# -------------------- Simple Playground Input --------------------
 
 def simple_input(text: str) -> str:
     return run_agent({
@@ -193,6 +201,7 @@ clean_agent = RunnableLambda(simple_input)
 app = FastAPI(
     title="Placement-Ready AI Agent",
     version="1.0",
+    description="LangServe deployment on Render",
 )
 
 # LangServe endpoint
@@ -202,6 +211,7 @@ add_routes(app, clean_agent, path="/agent")
 def root():
     return {"message": "Placement-Ready AI Agent is running!"}
 
+# -------------------- Resume Upload Endpoint --------------------
 
 @app.post("/analyze")
 async def analyze(
@@ -216,7 +226,7 @@ async def analyze(
         tmp_path = tmp.name
 
     reader = PdfReader(tmp_path)
-    text = "".join(p.extract_text() or "" for p in reader.pages)
+    text = "".join(page.extract_text() or "" for page in reader.pages)
 
     os.unlink(tmp_path)
 
@@ -238,18 +248,18 @@ GitHub username: {github_username}
 Run the full placement-readiness analysis.
 """
 
-    final_report = clean_agent.invoke({
-        "messages": [{"role": "user", "content": user_input}]
-    })
+    final_report = clean_agent.invoke(user_input)
 
     return {
         "resume_skills": resume_skills,
         "report": final_report,
     }
 
-# Local testing only
+# -------------------- Local Testing --------------------
+
 if __name__ == "__main__":
     import uvicorn
 
     port = int(os.getenv("PORT", 8000))
+
     uvicorn.run("app:app", host="0.0.0.0", port=port)

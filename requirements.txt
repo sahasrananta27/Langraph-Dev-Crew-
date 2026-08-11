@@ -1,15 +1,6 @@
-
 fastapi
 uvicorn
-langchain
-langchain-core
 langchain-google-genai
-langchain-community
-langserve
-ddgs
 pypdf
-requests
-pydantic
-sse-starlette
-python-dotenv
 python-multipart
+pydantic

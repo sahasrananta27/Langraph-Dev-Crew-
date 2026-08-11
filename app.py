@@ -1,4 +1,3 @@
-
 import os
 import tempfile
 import requests
@@ -6,20 +5,17 @@ import requests
 from fastapi import FastAPI, UploadFile, File, Form
 from langserve import add_routes
 from langchain_core.tools import tool
+from langchain_core.runnables import RunnableLambda
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.agents import create_agent
 from pypdf import PdfReader
-
 
 # -------------------- LLM --------------------
 
 MODEL_NAME = "models/gemini-3.5-flash-lite"
 
-llm = ChatGoogleGenerativeAI(
-    model=MODEL_NAME,
-    
-)
-
+# Render will read GOOGLE_API_KEY from Environment Variables
+llm = ChatGoogleGenerativeAI(model=MODEL_NAME)
 
 # -------------------- Tools --------------------
 
@@ -44,7 +40,6 @@ Data:
 
 Return concise bullet points.
 """
-
     return llm.invoke(prompt).content
 
 
@@ -65,7 +60,6 @@ Return:
 3. Quick Wins
 4. Readiness Verdict
 """
-
     return llm.invoke(prompt).content
 
 
@@ -83,7 +77,6 @@ Suggest exactly 4 projects with:
 - One-line scope
 - Estimated build time
 """
-
     return llm.invoke(prompt).content
 
 
@@ -134,12 +127,7 @@ def github_profile_check(github_username: str) -> str:
         f"Active repos since 2025: {recently_active}/{len(repos)}"
     )
 
-
 # -------------------- Agent --------------------
-
-# -------------------- Agent --------------------
-
-from langchain_core.runnables import RunnableLambda
 
 SYSTEM_PROMPT = """
 You are "PlacementPrep", an AI placement-readiness agent.
@@ -157,8 +145,8 @@ Given resume skills, a target role, and a GitHub username:
    - GitHub Health
    - Action Plan (Next 30 Days)
 
-Use clean Markdown formatting with headings, bullet points, and tables where useful.
-Do not return tool traces, JSON, or internal messages.
+Use clean Markdown formatting.
+Do not return tool traces or JSON.
 """
 
 agent = create_agent(
@@ -172,23 +160,11 @@ agent = create_agent(
     system_prompt=SYSTEM_PROMPT,
 )
 
-# Wrapper that returns only the final assistant response
 def run_agent(input_data: dict) -> str:
     result = agent.invoke(input_data)
-
-    # Get the final assistant message
     final_message = result["messages"][-1].content
-
-    # Handle list response from Gemini
-    if isinstance(final_message, list):
-        final_message = " ".join(
-            part["text"] if isinstance(part, dict) and "text" in part else str(part)
-            for part in final_message
-        )
-
     return str(final_message)
 
-# Create a clean runnable
 clean_agent = RunnableLambda(run_agent)
 
 # -------------------- FastAPI App --------------------
@@ -196,11 +172,10 @@ clean_agent = RunnableLambda(run_agent)
 app = FastAPI(
     title="Placement-Ready AI Agent",
     version="1.0",
-    description="LangServe deployment on Render",
 )
 
+# LangServe endpoint
 add_routes(app, clean_agent, path="/agent")
-
 
 @app.get("/")
 def root():
@@ -232,38 +207,28 @@ Resume text:
 """
 
     response = llm.invoke(skills_prompt)
-    content = response.content
-
-    if isinstance(content, list):
-        content = " ".join(str(x) for x in content)
-
-    resume_skills = str(content).strip()
+    resume_skills = str(response.content).strip()
 
     user_input = f"""
-Student profile:
+Target role: {role}
+Resume skills: {resume_skills}
+GitHub username: {github_username}
 
-- Target role: {role}
-- Resume skills: {resume_skills}
-- GitHub username: {github_username}
-
-Run the full placement-readiness analysis and give me the final report.
+Run the full placement-readiness analysis.
 """
 
-    result = agent.invoke({
+    final_report = clean_agent.invoke({
         "messages": [{"role": "user", "content": user_input}]
     })
 
-    final_message = result["messages"][-1].content
-
     return {
         "resume_skills": resume_skills,
-        "report": final_message,
+        "report": final_report,
     }
 
-
+# Local testing only
 if __name__ == "__main__":
     import uvicorn
 
     port = int(os.getenv("PORT", 8000))
-
     uvicorn.run("app:app", host="0.0.0.0", port=port)

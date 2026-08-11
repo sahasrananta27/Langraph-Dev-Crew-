@@ -17,7 +17,7 @@ MODEL_NAME = "models/gemini-3.5-flash-lite"
 
 llm = ChatGoogleGenerativeAI(
     model=MODEL_NAME,
-    google_api_key=os.getenv("GOOGLE_API_KEY"),
+    
 )
 
 

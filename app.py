@@ -97,7 +97,7 @@ def get_github(username):
     try:
         headers = {
             "Accept": "application/vnd.github+json",
-            "User-Agent": "PlacementPrep"
+            "User-Agent": "PlacementGuider"
         }
 
         token = os.getenv("GITHUB_TOKEN")
@@ -171,7 +171,7 @@ Recent repositories:
 def analyze_profile():
 
     prompt = f"""
-You are PlacementPrep, a professional career advisor.
+You are PlacementGuider, a professional career advisor.
 
 Analyze this candidate.
 
@@ -258,10 +258,72 @@ def answer_question(question):
             "and GitHub username first."
         )
 
+    question = question.strip()
+
+    if not question:
+        return "Please ask a career-related question."
+
+    # --------------------------------------------------------
+    # Career-topic validation
+    # --------------------------------------------------------
+
+    check_prompt = f"""
+You are a strict career-question classifier.
+
+Determine whether the user's question is related to
+career, jobs, placements, resumes, skills, programming
+skills, learning, projects, GitHub, interviews, job roles,
+career roadmap, salary preparation, or professional growth.
+
+User question:
+{question}
+
+Return ONLY one word:
+
+CAREER
+
+or
+
+NOT_CAREER
+"""
+
+    try:
+        check_response = llm.invoke(check_prompt)
+
+        classification = text_from_response(
+            check_response
+        ).strip().upper()
+
+    except Exception:
+        return (
+            "Sorry, I can only help with career-related "
+            "questions based on your uploaded profile."
+        )
+
+    # --------------------------------------------------------
+    # Reject unrelated questions
+    # --------------------------------------------------------
+
+    if "CAREER" not in classification:
+        return (
+            "Sorry, I can only answer career-related "
+            "questions based on your uploaded resume, "
+            "target role, skills, and GitHub profile."
+        )
+
+    # --------------------------------------------------------
+    # Career question
+    # --------------------------------------------------------
+
     prompt = f"""
 You are PlacementPrep, a personalized career assistant.
 
-The candidate has already uploaded their profile.
+You MUST ONLY discuss the candidate's career,
+education-to-career preparation, technical skills,
+jobs, placements, resumes, projects, GitHub,
+interviews, learning roadmap, and professional growth.
+
+Candidate profile:
 
 TARGET ROLE:
 {profile["role"]}
@@ -269,7 +331,7 @@ TARGET ROLE:
 RESUME:
 {profile["resume"][:8000]}
 
-CURRENT SKILLS:
+CURRENT TECHNICAL SKILLS:
 {profile["skills"]}
 
 GITHUB:
@@ -278,40 +340,58 @@ GITHUB:
 USER QUESTION:
 {question}
 
-Answer specifically for this candidate.
-
-You can help with:
-- Career readiness
-- Skill gaps
-- Skills to learn
-- Learning roadmap
-- Alternative career roles
-- Projects
-- GitHub improvement
-- Resume improvement
-- Interview preparation
-- Placement preparation
-
 Rules:
 
-1. Do not invent candidate experience.
-2. Use their actual resume skills.
-3. Compare their skills with the target role.
-4. Give practical recommendations.
-5. If they ask for a roadmap, give ordered steps.
-6. If they ask whether they can achieve the role,
-   give an honest assessment.
-7. If they ask what to learn, prioritize skills.
-8. If they ask about their resume, give specific improvements.
+1. Answer ONLY the career-related question.
 
-Keep the answer clear and reasonably concise.
+2. Base your answer on the candidate's uploaded profile.
+
+3. Do not invent skills, projects, education,
+   experience, certifications, or achievements.
+
+4. If the candidate lacks a required skill,
+   clearly identify it.
+
+5. If the candidate asks whether they can achieve
+   a role, honestly compare their current skills
+   with the role requirements.
+
+6. If they ask what to learn, prioritize the
+   most important missing skills.
+
+7. If they ask for a roadmap, give an ordered
+   learning roadmap.
+
+8. If they ask about their resume, give specific
+   resume improvements.
+
+9. If they ask about GitHub, analyze their
+   GitHub information.
+
+10. If they ask about other suitable jobs,
+    recommend roles based on their profile.
+
+11. Never answer unrelated questions.
+
+12. Never engage in casual conversation,
+    romance, jokes, entertainment, general trivia,
+    weather, politics, or unrelated topics.
+
+Give a practical and concise answer.
 """
 
-    return text_from_response(
-        llm.invoke(prompt)
-    )
+    try:
 
+        response = llm.invoke(prompt)
 
+        return text_from_response(response)
+
+    except Exception as e:
+
+        return (
+            "Sorry, I couldn't analyze that career "
+            "question right now. Please try again."
+        )
 # ============================================================
 # FASTAPI
 # ============================================================

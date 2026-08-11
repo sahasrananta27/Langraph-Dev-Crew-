@@ -3,7 +3,6 @@ uvicorn[standard]
 python-multipart
 pypdf
 requests
-pydantic
 langchain
 langchain-core
 langchain-google-genai

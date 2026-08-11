@@ -1,731 +1,734 @@
-
 import os
 import tempfile
-from typing import Optional
-
 import requests
+import uvicorn
 
-from fastapi import (
-    FastAPI,
-    UploadFile,
-    File,
-    Form,
-    HTTPException,
-)
-from fastapi.middleware.cors import CORSMiddleware
-
-from pydantic import BaseModel, Field
-
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 from pypdf import PdfReader
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.runnables import RunnableLambda
-
 from langserve import add_routes
 
+# ============================================================
+
+# CONFIG
 
 # ============================================================
-# APPLICATION
+
+API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+
+if not API_KEY:
+raise RuntimeError("GOOGLE_API_KEY is not configured.")
+
+MODEL = "gemini-3.1-flash-lite-preview"
+
+llm = ChatGoogleGenerativeAI(
+model=MODEL,
+google_api_key=API_KEY,
+temperature=0.3
+)
+
+# ============================================================
+
+# APP
+
 # ============================================================
 
 app = FastAPI(
-    title="Job-Ready Career Assistant",
-    description=(
-        "A personalized career assistant that analyzes a resume, "
-        "target role, and GitHub profile."
-    ),
-    version="1.0.0",
+title="Job-Ready Career Assistant",
+version="1.0"
 )
 
-
-# ============================================================
-# CORS
 # ============================================================
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+# PROFILE MEMORY
 
 # ============================================================
-# ENVIRONMENT VARIABLES
-# ============================================================
 
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-
-if not GOOGLE_API_KEY:
-    raise RuntimeError(
-        "GOOGLE_API_KEY environment variable is not set."
-    )
-
-
-# ============================================================
-# GEMINI MODEL
-# ============================================================
-
-llm = ChatGoogleGenerativeAI(
-    model="gemini-3.5-flash",
-    google_api_key=GOOGLE_API_KEY,
-    temperature=0.2,
-)
-
-
-# ============================================================
-# PROFILE STORE
-# ============================================================
-#
-# Demo storage.
-#
-# IMPORTANT:
-# This data disappears whenever the Render service restarts.
-# For a production application, replace this with PostgreSQL,
-# MongoDB, Redis, Supabase, etc.
-#
-# ============================================================
-
-profile_store = {
-    "resume_text": None,
-    "skills": None,
-    "target_role": None,
-    "github_username": None,
-    "github_summary": None,
-    "github_repositories": None,
+profile = {
+"resume": "",
+"skills": "",
+"role": "",
+"github": "",
+"github_data": ""
 }
 
-
-# ============================================================
-# CONFIGURATION
 # ============================================================
 
-MAX_RESUME_TEXT = 12000
-MAX_PROMPT_RESUME_TEXT = 7000
-MAX_GITHUB_REPOS = 10
-
+# SAFE GEMINI TEXT
 
 # ============================================================
-# REQUEST MODELS
+
+def text(content):
+"""Convert Gemini content into normal string."""
+
+```
+if isinstance(content, str):
+    return content.strip()
+
+if isinstance(content, list):
+    parts = []
+
+    for item in content:
+        if isinstance(item, str):
+            parts.append(item)
+
+        elif isinstance(item, dict):
+            value = item.get("text")
+
+            if value:
+                parts.append(str(value))
+
+    return "\n".join(parts).strip()
+
+return str(content).strip()
+```
+
+# ============================================================
+
+# PDF TEXT
+
+# ============================================================
+
+def read_pdf(data: bytes) -> str:
+
+```
+if not data:
+    raise ValueError("PDF is empty.")
+
+path = None
+
+try:
+
+    with tempfile.NamedTemporaryFile(
+        delete=False,
+        suffix=".pdf"
+    ) as f:
+
+        f.write(data)
+        path = f.name
+
+    reader = PdfReader(path)
+
+    result = []
+
+    for page in reader.pages:
+        result.append(page.extract_text() or "")
+
+    resume = "\n".join(result).strip()
+
+    if not resume:
+        raise ValueError(
+            "Could not extract text. "
+            "The PDF may be scanned/image based."
+        )
+
+    return resume[:12000]
+
+finally:
+
+    if path and os.path.exists(path):
+        os.unlink(path)
+```
+
+# ============================================================
+
+# GITHUB
+
+# ============================================================
+
+def github(username: str) -> str:
+
+```
+headers = {
+    "Accept": "application/vnd.github+json",
+    "User-Agent": "Job-Ready-Career-Assistant"
+}
+
+try:
+
+    user = requests.get(
+        f"https://api.github.com/users/{username}",
+        headers=headers,
+        timeout=10
+    )
+
+    if user.status_code != 200:
+        return "GitHub profile not found."
+
+    data = user.json()
+
+    repos = requests.get(
+        f"https://api.github.com/users/{username}/repos",
+        headers=headers,
+        params={
+            "sort": "updated",
+            "per_page": 10
+        },
+        timeout=10
+    )
+
+    repo_data = []
+
+    if repos.status_code == 200:
+
+        for r in repos.json():
+
+            repo_data.append(
+                f"{r.get('name')} | "
+                f"{r.get('language') or 'Unknown'} | "
+                f"{r.get('description') or 'No description'}"
+            )
+
+    return (
+        f"Username: {username}\n"
+        f"Public repos: {data.get('public_repos', 0)}\n"
+        f"Followers: {data.get('followers', 0)}\n"
+        f"Bio: {data.get('bio') or 'None'}\n"
+        f"Repositories:\n"
+        + "\n".join(repo_data)
+    )
+
+except Exception:
+    return "GitHub information could not be fetched."
+```
+
+# ============================================================
+
+# CAREER ANALYSIS
+
+# ============================================================
+
+def analyze_career(question="Give a complete career analysis."):
+
+```
+prompt = f"""
+```
+
+You are an expert career and placement assistant.
+
+Analyze THIS candidate using the information below.
+
+TARGET ROLE:
+{profile["role"]}
+
+RESUME:
+{profile["resume"][:7000]}
+
+TECHNICAL SKILLS:
+{profile["skills"]}
+
+GITHUB:
+{profile["github_data"][:5000]}
+
+USER QUESTION:
+{question}
+
+Your job is to give personalized career guidance.
+
+You MUST:
+
+1. Assess whether the candidate can realistically target
+   the requested role.
+
+2. Clearly separate:
+
+   * Skills they already have
+   * Skills they are missing
+
+3. Identify the most important skill gaps.
+
+4. Tell the candidate whether they should:
+
+   * Apply now
+   * Learn more first
+   * Apply while learning
+
+5. Suggest other roles they can currently apply for
+   based ONLY on their actual skills.
+
+6. If the user asks for a roadmap, provide a practical
+   ordered roadmap from their CURRENT level.
+
+7. If useful, recommend projects that improve their profile.
+
+8. Analyze GitHub projects when available.
+
+9. Never invent skills, projects, education or experience.
+
+10. Be honest rather than overly positive.
+
+Use these sections when appropriate:
+
+### Target Role Assessment
+
+### Current Skills
+
+### Skill Gaps
+
+### Other Suitable Roles
+
+### GitHub Analysis
+
+### Recommended Projects
+
+### Roadmap
+
+### Next Steps
+
+Keep the response clear and practical.
+"""
+
+```
+response = llm.invoke(prompt)
+
+return text(response.content)
+```
+
+# ============================================================
+
+# REQUEST MODEL
+
 # ============================================================
 
 class ChatRequest(BaseModel):
-    question: str = Field(
-        ...,
-        min_length=1,
-        max_length=3000,
-        description="Career-related question"
+question: str
+
+# ============================================================
+
+# ANALYZE RESUME
+
+# ============================================================
+
+@app.post("/analyze")
+async def analyze(
+resume: UploadFile = File(...),
+role: str = Form(...),
+github_username: str = Form(...)
+):
+
+```
+if not resume.filename:
+    raise HTTPException(400, "Resume is required.")
+
+if not resume.filename.lower().endswith(".pdf"):
+    raise HTTPException(400, "Only PDF files are supported.")
+
+if not role.strip():
+    raise HTTPException(400, "Target role is required.")
+
+if not github_username.strip():
+    raise HTTPException(400, "GitHub username is required.")
+
+# Read resume
+try:
+
+    data = await resume.read()
+
+    resume_text = read_pdf(data)
+
+except Exception as e:
+
+    raise HTTPException(
+        400,
+        f"Resume processing failed: {e}"
     )
 
-
-# ============================================================
-# HELPER: EXTRACT PDF TEXT
-# ============================================================
-
-def extract_resume_text(pdf_bytes: bytes) -> str:
-    """
-    Extract text from an uploaded PDF.
-    """
-
-    if not pdf_bytes:
-        raise ValueError("The uploaded PDF is empty.")
-
-    temp_path: Optional[str] = None
-
-    try:
-
-        with tempfile.NamedTemporaryFile(
-            delete=False,
-            suffix=".pdf"
-        ) as tmp:
-
-            tmp.write(pdf_bytes)
-            temp_path = tmp.name
-
-        reader = PdfReader(temp_path)
-
-        if not reader.pages:
-            raise ValueError("The PDF contains no pages.")
-
-        text_parts = []
-
-        for page in reader.pages:
-
-            page_text = page.extract_text() or ""
-
-            if page_text.strip():
-                text_parts.append(page_text)
-
-        text = "\n".join(text_parts).strip()
-
-        if not text:
-            raise ValueError(
-                "Could not extract text from the PDF. "
-                "The resume may be scanned/image-based."
-            )
-
-        return text[:MAX_RESUME_TEXT]
-
-    finally:
-
-        if temp_path and os.path.exists(temp_path):
-            os.unlink(temp_path)
-
-
-# ============================================================
-# HELPER: EXTRACT SKILLS USING GEMINI
-# ============================================================
-
-def extract_skills(resume_text: str) -> str:
-    """
-    Extract technical skills from the resume.
-    """
+# Extract skills
+try:
 
     prompt = f"""
-You are a resume parsing system.
+```
 
-Extract ONLY technical skills from the resume.
+Extract ONLY technical skills from this resume.
 
 Include:
-- Programming languages
-- Frameworks
-- Libraries
-- Databases
-- Cloud platforms
-- AI/ML technologies
-- Developer tools
-- APIs
-- Software technologies
-- Relevant platforms
+programming languages, frameworks, libraries,
+databases, cloud, AI/ML, APIs, developer tools
+and platforms.
 
 Do NOT include:
-- Soft skills
-- Communication skills
-- Leadership
-- Hobbies
-- Personal traits
-- Job titles
-- Company names
+soft skills, education, names, companies,
+job titles or personal information.
 
-Return ONLY a clean comma-separated list.
+Return ONLY a comma-separated list.
 
 Resume:
-{resume_text[:MAX_RESUME_TEXT]}
+{resume_text[:8000]}
 """
 
+```
     response = llm.invoke(prompt)
 
-    skills = response.content.strip()
+    skills = text(response.content)
 
     if not skills:
-        return "No technical skills detected."
+        skills = "No technical skills detected."
 
-    return skills
+except Exception as e:
 
-
-# ============================================================
-# HELPER: FETCH GITHUB PROFILE
-# ============================================================
-
-def fetch_github_profile(username: str):
-    """
-    Fetch GitHub profile and repository information.
-    """
-
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "Job-Ready-Career-Assistant",
-    }
-
-    profile_url = (
-        f"https://api.github.com/users/{username}"
+    raise HTTPException(
+        500,
+        f"Skill extraction failed: {e}"
     )
 
-    try:
+# GitHub
+github_data = github(
+    github_username.strip()
+)
 
-        response = requests.get(
-            profile_url,
-            headers=headers,
-            timeout=10,
-        )
+# Save profile
+profile["resume"] = resume_text
+profile["skills"] = skills
+profile["role"] = role.strip()
+profile["github"] = github_username.strip()
+profile["github_data"] = github_data
 
-        if response.status_code == 404:
-            return (
-                "GitHub username not found.",
-                []
-            )
+# Generate analysis
+report = analyze_career()
 
-        if response.status_code != 200:
-            return (
-                f"GitHub API returned status "
-                f"{response.status_code}.",
-                []
-            )
-
-        user = response.json()
-
-        github_summary = (
-            f"GitHub username: {username}\n"
-            f"Name: {user.get('name') or 'Not provided'}\n"
-            f"Public repositories: "
-            f"{user.get('public_repos', 0)}\n"
-            f"Followers: {user.get('followers', 0)}\n"
-            f"Following: {user.get('following', 0)}\n"
-            f"Bio: {user.get('bio') or 'Not provided'}\n"
-            f"Profile URL: "
-            f"{user.get('html_url') or 'Not available'}"
-        )
-
-        # ----------------------------------------------------
-        # Fetch repositories
-        # ----------------------------------------------------
-
-        repos_url = (
-            f"https://api.github.com/users/"
-            f"{username}/repos"
-        )
-
-        repos_response = requests.get(
-            repos_url,
-            headers=headers,
-            params={
-                "sort": "updated",
-                "direction": "desc",
-                "per_page": MAX_GITHUB_REPOS,
-            },
-            timeout=10,
-        )
-
-        repositories = []
-
-        if repos_response.status_code == 200:
-
-            repos = repos_response.json()
-
-            for repo in repos:
-
-                repositories.append({
-                    "name": repo.get("name"),
-                    "description": (
-                        repo.get("description")
-                        or "No description"
-                    ),
-                    "language": (
-                        repo.get("language")
-                        or "Not specified"
-                    ),
-                    "stars": repo.get(
-                        "stargazers_count",
-                        0
-                    ),
-                    "url": repo.get("html_url"),
-                })
-
-        return github_summary, repositories
-
-    except requests.RequestException:
-
-        return (
-            "GitHub profile could not be fetched "
-            "because of a network error.",
-            []
-        )
-
-    except Exception:
-
-        return (
-            "GitHub profile could not be processed.",
-            []
-        )
-
+return {
+    "message": "Profile analyzed successfully.",
+    "target_role": profile["role"],
+    "skills": skills,
+    "github": github_data,
+    "report": report
+}
+```
 
 # ============================================================
-# HELPER: BUILD GITHUB REPOSITORY TEXT
-# ============================================================
 
-def format_github_repositories(repositories) -> str:
+# CHAT
 
-    if not repositories:
-        return "No public repositories available."
-
-    lines = []
-
-    for repo in repositories:
-
-        lines.append(
-            f"- {repo['name']} | "
-            f"Language: {repo['language']} | "
-            f"Stars: {repo['stars']} | "
-            f"Description: {repo['description']}"
-        )
-
-    return "\n".join(lines)
-
-
-# ============================================================
-# UPLOAD PROFILE
-# ============================================================
-
-@app.post("/upload_profile")
-async def upload_profile(
-    resume: UploadFile = File(...),
-    target_role: str = Form(...),
-    github_username: str = Form(...),
-):
-    """
-    Upload resume and create the candidate profile.
-    """
-
-    # --------------------------------------------------------
-    # Validate target role
-    # --------------------------------------------------------
-
-    target_role = target_role.strip()
-
-    if not target_role:
-        raise HTTPException(
-            status_code=400,
-            detail="Target role cannot be empty."
-        )
-
-    # --------------------------------------------------------
-    # Validate GitHub username
-    # --------------------------------------------------------
-
-    github_username = github_username.strip()
-
-    if not github_username:
-        raise HTTPException(
-            status_code=400,
-            detail="GitHub username cannot be empty."
-        )
-
-    # --------------------------------------------------------
-    # Validate PDF
-    # --------------------------------------------------------
-
-    filename = resume.filename or ""
-
-    if not filename.lower().endswith(".pdf"):
-
-        raise HTTPException(
-            status_code=400,
-            detail="Please upload a PDF resume."
-        )
-
-    # --------------------------------------------------------
-    # Read PDF
-    # --------------------------------------------------------
-
-    try:
-
-        pdf_bytes = await resume.read()
-
-        resume_text = extract_resume_text(
-            pdf_bytes
-        )
-
-    except ValueError as e:
-
-        raise HTTPException(
-            status_code=400,
-            detail=str(e)
-        )
-
-    except Exception as e:
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"Resume processing failed: {str(e)}"
-        )
-
-    # --------------------------------------------------------
-    # Extract skills
-    # --------------------------------------------------------
-
-    try:
-
-        skills = extract_skills(
-            resume_text
-        )
-
-    except Exception as e:
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"Skill extraction failed: {str(e)}"
-        )
-
-    # --------------------------------------------------------
-    # GitHub
-    # --------------------------------------------------------
-
-    github_summary, repositories = (
-        fetch_github_profile(
-            github_username
-        )
-    )
-
-    # --------------------------------------------------------
-    # Store profile
-    # --------------------------------------------------------
-
-    profile_store["resume_text"] = resume_text
-    profile_store["skills"] = skills
-    profile_store["target_role"] = target_role
-    profile_store["github_username"] = github_username
-    profile_store["github_summary"] = github_summary
-    profile_store["github_repositories"] = repositories
-
-    # --------------------------------------------------------
-    # Response
-    # --------------------------------------------------------
-
-    return {
-        "message": "Profile uploaded successfully.",
-        "target_role": target_role,
-        "skills": skills,
-        "github_username": github_username,
-        "github_summary": github_summary,
-        "github_repositories": repositories,
-    }
-
-
-# ============================================================
-# GET CURRENT PROFILE
-# ============================================================
-
-@app.get("/profile")
-def get_profile():
-    """
-    Return the currently loaded candidate profile.
-    """
-
-    if profile_store["skills"] is None:
-
-        return {
-            "profile_loaded": False,
-            "message": "No profile has been uploaded yet."
-        }
-
-    return {
-        "profile_loaded": True,
-        "target_role": profile_store["target_role"],
-        "skills": profile_store["skills"],
-        "github_username": profile_store["github_username"],
-        "github_summary": profile_store["github_summary"],
-        "github_repositories": (
-            profile_store["github_repositories"]
-        ),
-    }
-
-
-# ============================================================
-# CAREER ASSISTANT CORE
-# ============================================================
-
-async def run_career_assistant(
-    question: str
-) -> str:
-    """
-    Core personalized career assistant.
-    """
-
-    # --------------------------------------------------------
-    # Make sure profile exists
-    # --------------------------------------------------------
-
-    if profile_store["skills"] is None:
-
-        return (
-            "Please upload your resume, target role, "
-            "and GitHub username first using "
-            "/upload_profile."
-        )
-
-    # --------------------------------------------------------
-    # GitHub repositories
-    # --------------------------------------------------------
-
-    github_repositories = (
-        format_github_repositories(
-            profile_store["github_repositories"]
-            or []
-        )
-    )
-
-    # --------------------------------------------------------
-    # Personalized prompt
-    # --------------------------------------------------------
-
-    prompt = f"""
-You are a personalized Job-Ready Career Assistant.
-
-Your job is to help the candidate become job-ready
-for their target role.
-
-==============================
-CANDIDATE PROFILE
-==============================
-
-Target role:
-{profile_store["target_role"]}
-
-Technical skills:
-{profile_store["skills"]}
-
-GitHub profile:
-{profile_store["github_summary"]}
-
-Recent GitHub repositories:
-{github_repositories}
-
-Resume:
-{profile_store["resume_text"][:MAX_PROMPT_RESUME_TEXT]}
-
-==============================
-USER QUESTION
-==============================
-
-{question}
-
-==============================
-INSTRUCTIONS
-==============================
-
-1. Answer specifically for THIS candidate.
-
-2. Use the candidate's current skills, resume,
-   target role, and GitHub projects.
-
-3. Do not invent skills, projects, education,
-   experience, or achievements.
-
-4. If the candidate is missing important skills,
-   clearly identify those skill gaps.
-
-5. If the question asks for a roadmap,
-   prioritize the most important topics first.
-
-6. If the question asks whether the candidate
-   is job-ready, give an honest assessment.
-
-7. If the candidate has relevant GitHub projects,
-   explain how those projects can strengthen
-   their profile.
-
-8. Prefer practical recommendations over generic advice.
-
-9. When useful, organize the answer using:
-   - Current status
-   - Skill gaps
-   - What to learn
-   - Projects to build
-   - Next steps
-
-10. Keep answers concise but useful.
-
-11. Never claim that the candidate knows something
-    unless it appears in the provided profile.
-
-Answer the user's question now.
-"""
-
-    response = llm.invoke(prompt)
-
-    return response.content.strip()
-
-
-# ============================================================
-# CHAT API
 # ============================================================
 
 @app.post("/chat")
 async def chat(req: ChatRequest):
-    """
-    Standard JSON chat endpoint.
-    """
 
-    answer = await run_career_assistant(
-        req.question
-    )
+```
+if not profile["skills"]:
 
     return {
-        "answer": answer
+        "answer":
+        "Please upload your resume, target role "
+        "and GitHub username first."
     }
 
+return {
+    "answer": analyze_career(req.question)
+}
+```
 
 # ============================================================
+
 # LANGSERVE PLAYGROUND
-# ============================================================
-#
-# This accepts plain text from:
-#
-# /agent/playground/
-#
-# Example:
-#
-# "What should I learn next?"
-#
+
 # ============================================================
 
-async def playground_chat(
-    text: str
-) -> str:
+def playground(text_input: str):
 
-    text = text.strip()
+```
+return analyze_career(text_input)
+```
 
-    if not text:
-
-        return (
-            "Please enter a career-related question."
-        )
-
-    return await run_career_assistant(
-        text
-    )
-
-
-clean_agent = RunnableLambda(
-    playground_chat
-)
-
+agent = RunnableLambda(playground)
 
 add_routes(
-    app,
-    clean_agent,
-    path="/agent"
+app,
+agent,
+path="/agent"
 )
 
+# ============================================================
+
+# SIMPLE UI
 
 # ============================================================
-# HEALTH CHECK
+
+HTML = """
+
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<title>Job-Ready Career Assistant</title>
+
+<meta name="viewport"
+   content="width=device-width, initial-scale=1">
+
+<style>
+
+body {
+    font-family: Arial;
+    background: #f1f5f9;
+    margin: 0;
+}
+
+.container {
+    max-width: 700px;
+    margin: 40px auto;
+    background: white;
+    padding: 30px;
+    border-radius: 15px;
+    box-shadow: 0 5px 25px #0002;
+}
+
+h1 {
+    text-align: center;
+}
+
+p {
+    color: #64748b;
+    text-align: center;
+}
+
+label {
+    display: block;
+    margin-top: 18px;
+    font-weight: bold;
+}
+
+input {
+    width: 100%;
+    padding: 12px;
+    margin-top: 7px;
+    box-sizing: border-box;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+}
+
+button {
+    width: 100%;
+    padding: 14px;
+    margin-top: 22px;
+    border: 0;
+    border-radius: 8px;
+    background: #2563eb;
+    color: white;
+    font-size: 16px;
+    cursor: pointer;
+}
+
+button:disabled {
+    background: #94a3b8;
+}
+
+#loading {
+    display: none;
+    text-align: center;
+    margin-top: 20px;
+}
+
+#result {
+    display: none;
+    margin-top: 25px;
+    padding: 20px;
+    background: #f8fafc;
+    border-radius: 10px;
+}
+
+#report {
+    white-space: pre-wrap;
+    line-height: 1.6;
+}
+
+#error {
+    color: #dc2626;
+    margin-top: 15px;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>🎯 Job-Ready Career Assistant</h1>
+
+<p>
+Upload your resume and discover your career readiness.
+</p>
+
+<label>📄 Resume PDF</label>
+
+<input
+type="file"
+id="resume"
+accept=".pdf"
+
+>
+
+<label>💼 Target Role</label>
+
+<input
+id="role"
+placeholder="Example: Python Developer"
+
+>
+
+<label>🐙 GitHub Username</label>
+
+<input
+id="github"
+placeholder="Example: sahasra123"
+
+>
+
+<button id="button" onclick="analyze()">
+Analyze My Career
+</button>
+
+<div id="loading">
+⏳ Analyzing resume, skills and GitHub...
+</div>
+
+<div id="error"></div>
+
+<div id="result">
+
+<h3>🧠 Detected Skills</h3>
+
+<div id="skills"></div>
+
+<h3>📊 Career Analysis</h3>
+
+<div id="report"></div>
+
+</div>
+
+</div>
+
+<script>
+
+async function analyze() {
+
+    const resume =
+        document.getElementById("resume").files[0];
+
+    const role =
+        document.getElementById("role").value.trim();
+
+    const github =
+        document.getElementById("github").value.trim();
+
+    const error =
+        document.getElementById("error");
+
+    const result =
+        document.getElementById("result");
+
+    const loading =
+        document.getElementById("loading");
+
+    const button =
+        document.getElementById("button");
+
+    error.innerText = "";
+
+    if (!resume)
+        return error.innerText =
+            "Please upload your resume.";
+
+    if (!role)
+        return error.innerText =
+            "Please enter your target role.";
+
+    if (!github)
+        return error.innerText =
+            "Please enter your GitHub username.";
+
+    const form = new FormData();
+
+    form.append("resume", resume);
+    form.append("role", role);
+    form.append("github_username", github);
+
+    button.disabled = true;
+    loading.style.display = "block";
+    result.style.display = "none";
+
+    try {
+
+        const response = await fetch(
+            "/analyze",
+            {
+                method: "POST",
+                body: form
+            }
+        );
+
+        const data = await response.json();
+
+        if (!response.ok)
+            throw new Error(
+                data.detail || "Analysis failed."
+            );
+
+        document.getElementById("skills")
+            .innerText = data.skills;
+
+        document.getElementById("report")
+            .innerText = data.report;
+
+        result.style.display = "block";
+
+    } catch (e) {
+
+        error.innerText = e.message;
+
+    } finally {
+
+        button.disabled = false;
+        loading.style.display = "none";
+
+    }
+}
+
+</script>
+
+</body>
+</html>
+"""
+
+# ============================================================
+
+# HOME
+
+# ============================================================
+
+@app.get("/", response_class=HTMLResponse)
+def home():
+return HTML
+
+# ============================================================
+
+# HEALTH
+
 # ============================================================
 
 @app.get("/health")
 def health():
-
-    return {
-        "status": "healthy",
-        "service": "Job-Ready Career Assistant"
-    }
-
+return {"status": "healthy"}
 
 # ============================================================
-# ROOT
+
+# SERVER
+
 # ============================================================
 
-@app.get("/")
-def root():
+if **name** == "**main**":
 
-    return {
-        "message": "Job-Ready Career Assistant is running.",
-        "docs": "/docs",
-        "playground": "/agent/playground/",
-        "health": "/health",
-        "upload_profile": "/upload_profile",
-        "chat": "/chat",
-        "profile": "/profile",
-    }
-
+```
+uvicorn.run(
+    "app:app",
+    host="0.0.0.0",
+    port=int(os.getenv("PORT", 8000))
+)
+```

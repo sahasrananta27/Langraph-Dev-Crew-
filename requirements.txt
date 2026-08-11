@@ -4,3 +4,4 @@ langchain-google-genai
 pypdf
 python-multipart
 pydantic
+requests

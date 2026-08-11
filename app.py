@@ -1,4 +1,4 @@
-```python
+
 import os
 import tempfile
 from typing import Optional
@@ -728,4 +728,4 @@ def root():
         "chat": "/chat",
         "profile": "/profile",
     }
-```
+

@@ -162,8 +162,22 @@ agent = create_agent(
 
 def run_agent(input_data: dict) -> str:
     result = agent.invoke(input_data)
+
     final_message = result["messages"][-1].content
-    return str(final_message)
+
+    # Gemini may return a list of content blocks
+    if isinstance(final_message, list):
+        texts = []
+
+        for item in final_message:
+            if isinstance(item, dict) and item.get("type") == "text":
+                texts.append(item.get("text", ""))
+            else:
+                texts.append(str(item))
+
+        final_message = "\n".join(texts)
+
+    return final_message.strip()
 
 from langchain_core.runnables import RunnableLambda
 

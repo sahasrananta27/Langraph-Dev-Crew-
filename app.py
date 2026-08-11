@@ -165,7 +165,14 @@ def run_agent(input_data: dict) -> str:
     final_message = result["messages"][-1].content
     return str(final_message)
 
-clean_agent = RunnableLambda(run_agent)
+from langchain_core.runnables import RunnableLambda
+
+def simple_input(text: str) -> str:
+    return run_agent({
+        "messages": [{"role": "user", "content": text}]
+    })
+
+clean_agent = RunnableLambda(simple_input)
 
 # -------------------- FastAPI App --------------------
 

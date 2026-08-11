@@ -3,32 +3,34 @@ import tempfile
 import requests
 import uvicorn
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+
+from langserve import add_routes
+from langchain_core.runnables import RunnableLambda
+from langchain_core.tools import tool
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.agents import create_agent
+
 from pypdf import PdfReader
 
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.runnables import RunnableLambda
-from langserve import add_routes
 
-# ============================================================
+GOOGLE_API_KEY = (
+    os.getenv("GOOGLE_API_KEY")
+    or os.getenv("GEMINI_API_KEY")
+    or os.getenv("GOOGLE_API")
+)
 
-# CONFIG
+if not GOOGLE_API_KEY:
+    raise RuntimeError("GOOGLE_API_KEY is not configured.")
 
-# ============================================================
 
-API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-
-if not API_KEY:
-raise RuntimeError("GOOGLE_API_KEY is not configured.")
-
-MODEL = "gemini-3.1-flash-lite-preview"
+MODEL_NAME = "gemini-3.1-flash-lite-preview"
 
 llm = ChatGoogleGenerativeAI(
-model=MODEL,
-google_api_key=API_KEY,
-temperature=0.3
+    model=MODEL_NAME,
+    google_api_key=GOOGLE_API_KEY,
+    temperature=0.3
 )
 
 # ============================================================
